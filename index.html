@@ -140,7 +140,11 @@
                 </div>
                 <!-- オフライン用マップ事前ダウンロード -->
                 <button id="btn-download-map" style="background-color: var(--md-secondary-container); color: var(--md-on-secondary-container);" class="m3-interactive w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-2xl shadow-sm hover:shadow-md active:scale-[0.98] font-bold text-xs">
-                    <svg width="18" height="18" fill="currentColor" viewBox="0 0 256 256"><path d="M224,152v56a16,16,0,0,1-16,16H48a16,16,0,0,1-16-16V152a8,8,0,0,1,16,0v56H208V152a8,8,0,0,1,16,0Z"></path><path d="M170.34,133.66l-40,40a8,8,0,0,1-11.32,0l-40-40a8,8,0,0,1,11.32-11.32L120,152.69V40a8,8,0,0,1,16,0V152.69l29.66-29.65a8,8,0,0,1,11.32,11.32Z"></path></svg>
+                    <svg id="btn-download-map-icon-default" width="18" height="18" fill="currentColor" viewBox="0 0 256 256"><path d="M224,152v56a16,16,0,0,1-16,16H48a16,16,0,0,1-16-16V152a8,8,0,0,1,16,0v56H208V152a8,8,0,0,1,16,0Z"></path><path d="M170.34,133.66l-40,40a8,8,0,0,1-11.32,0l-40-40a8,8,0,0,1,11.32-11.32L120,152.69V40a8,8,0,0,1,16,0V152.69l29.66-29.65a8,8,0,0,1,11.32,11.32Z"></path></svg>
+                    <svg id="btn-download-map-icon-ready" class="hidden" width="18" height="18" viewBox="0 0 24 24" fill="none">
+                        <circle cx="12" cy="12" r="10" fill="currentColor" opacity="0.18"/>
+                        <path d="M7 12.3l3.2 3.2 6.6-6.6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
                     <span id="btn-download-map-label">オフライン用に地図を保存</span>
                 </button>
             </div>
@@ -399,13 +403,19 @@
         // Service Worker (service-worker.js) の TILE_CACHE と同じ名前にすること
         const TILE_CACHE_NAME = 'hinanjo-tiles-v1';
         // 事前ダウンロードするズーム範囲。広げるとタイル数が指数的に増える。
-        // MAP_BOUNDSの範囲では目安として z11〜15で合計 約660枚
-        // （参考: 以前の広い範囲だと同じz11〜15で約1,150枚だった）。
-        // z16まで広げると+約2,500枚、z17まで広げるとさらに+約1万枚と急増するため注意。
+        // MAP_BOUNDSの範囲では目安として z11〜14で合計 約180枚
+        // （参考: z15まで含めると約660枚、さらに広い範囲だとz11〜15で約1,150枚だった）。
+        // 建物1つ1つが判別できるほどの精細さ(z15以上)は避難所を探す用途では必須ではなく、
+        // 街区・主要道路が見えるz14程度でも避難所ピンの位置は十分わかるため、
+        // データ量削減のためz14までに制限している。
         // OpenStreetMapのタイルサーバーは大量の自動一括取得を想定していないため、
         // 範囲やズームを広げすぎず、必要な時にだけ実行することを推奨。
         const OFFLINE_MIN_ZOOM = 11;
-        const OFFLINE_MAX_ZOOM = 15;
+        const OFFLINE_MAX_ZOOM = 14;
+        // 通常表示時（オンライン中）もこのズームより先には拡大できないようにする。
+        // これにより「オフライン保存した範囲」と「実際に表示できる範囲」が常に一致し、
+        // 保存していないズームレベルにアクセスして真っ白になる、という状態を防げる。
+        const MAP_MAX_ZOOM = OFFLINE_MAX_ZOOM;
 
 
         // DOM Elements
@@ -435,6 +445,8 @@
 
         const btnDownloadMap = document.getElementById('btn-download-map');
         const btnDownloadMapLabel = document.getElementById('btn-download-map-label');
+        const btnDownloadMapIconDefault = document.getElementById('btn-download-map-icon-default');
+        const btnDownloadMapIconReady = document.getElementById('btn-download-map-icon-ready');
 
         function initMap() {
             // 読み込み・移動範囲を総社市周辺（避難所の分布範囲＋余白）に制限
@@ -447,7 +459,8 @@
             map = L.map('map', {
                 center: defaultCenter,
                 zoom: 13,
-                minZoom: 11, // ズームアウトしすぎないように制限
+                minZoom: OFFLINE_MIN_ZOOM, // ズームアウトしすぎないように制限
+                maxZoom: MAP_MAX_ZOOM, // オフライン保存範囲を超えてズームインできないように制限
                 maxBounds: sojaBounds, // 移動範囲を制限して不要な読み込みを防ぐ
                 maxBoundsViscosity: 1.0, // 境界でピタッと止める
                 zoomControl: false
@@ -462,7 +475,7 @@
             // ヒットしないことがあるため、ホストを固定してキャッシュの一貫性を保つ。
             L.tileLayer(OSM_TILE_URL_TEMPLATE, {
                 attribution: '&copy; OpenStreetMap contributors',
-                maxZoom: 19
+                maxZoom: MAP_MAX_ZOOM
             }).addTo(map);
 
             renderMarkers();
@@ -522,7 +535,7 @@
                 const marker = L.marker([shelter.lat, shelter.lng], { icon: customIcon }).addTo(map);
                 
                 marker.on('click', () => {
-                    map.flyTo([shelter.lat, shelter.lng], 16, { duration: 0.8 });
+                    map.flyTo([shelter.lat, shelter.lng], MAP_MAX_ZOOM, { duration: 0.8 });
                     highlightCard(shelter.id);
                     // モバイル時はマーカータップでシートを下げる
                     if (window.innerWidth < 768) expandBottomSheet(false);
@@ -591,7 +604,7 @@
                 `;
                 
                 li.addEventListener('click', () => {
-                    map.flyTo([shelter.lat, shelter.lng], 16, { duration: 0.8 });
+                    map.flyTo([shelter.lat, shelter.lng], MAP_MAX_ZOOM, { duration: 0.8 });
                     highlightCard(shelter.id);
                     // モバイル時はリストアイテムタップでシートを下げる
                     if (window.innerWidth < 768) expandBottomSheet(false);
@@ -683,7 +696,7 @@
                     const lat = pos.coords.latitude;
                     const lng = pos.coords.longitude;
                     setUserLocation(lat, lng, "GPS");
-                    map.flyTo([lat, lng], 15, { duration: 1 });
+                    map.flyTo([lat, lng], MAP_MAX_ZOOM, { duration: 1 });
                     showToast("GPSで現在地を取得しました");
                     btnGps.innerHTML = originalHtml;
                 },
@@ -821,6 +834,52 @@
             return { x, y };
         }
 
+        // 保存対象タイルの座標一覧を作成（MAP_BOUNDS × OFFLINE_MIN_ZOOM〜OFFLINE_MAX_ZOOM）
+        function getOfflineTileList() {
+            let tiles = [];
+            for (let z = OFFLINE_MIN_ZOOM; z <= OFFLINE_MAX_ZOOM; z++) {
+                const t1 = lonLatToTile(MAP_BOUNDS.north, MAP_BOUNDS.west, z); // 北西端
+                const t2 = lonLatToTile(MAP_BOUNDS.south, MAP_BOUNDS.east, z); // 南東端
+                const xMin = Math.min(t1.x, t2.x), xMax = Math.max(t1.x, t2.x);
+                const yMin = Math.min(t1.y, t2.y), yMax = Math.max(t1.y, t2.y);
+                for (let x = xMin; x <= xMax; x++) {
+                    for (let y = yMin; y <= yMax; y++) {
+                        tiles.push({ x, y, z });
+                    }
+                }
+            }
+            return tiles;
+        }
+
+        function tileToUrl(t) {
+            return OSM_TILE_URL_TEMPLATE
+                .replace('{z}', t.z)
+                .replace('{x}', t.x)
+                .replace('{y}', t.y);
+        }
+
+        // ダウンロードボタンの見た目を「未保存」⇔「準備完了」で切り替える
+        function setDownloadButtonReady(isReady) {
+            btnDownloadMapIconDefault.classList.toggle('hidden', isReady);
+            btnDownloadMapIconReady.classList.toggle('hidden', !isReady);
+            btnDownloadMapLabel.innerText = isReady ? 'オフライン用のマップ準備完了' : 'オフライン用に地図を保存';
+            btnDownloadMap.style.backgroundColor = isReady ? 'var(--md-primary-container)' : 'var(--md-secondary-container)';
+            btnDownloadMap.style.color = isReady ? 'var(--md-on-primary-container)' : 'var(--md-on-secondary-container)';
+        }
+
+        // 起動時などに、既に必要なタイルが全部キャッシュ済みかどうかを確認してボタンに反映
+        async function refreshDownloadButtonState() {
+            if (!('caches' in window)) return;
+            try {
+                const total = getOfflineTileList().length;
+                const cache = await caches.open(TILE_CACHE_NAME);
+                const keys = await cache.keys();
+                setDownloadButtonReady(total > 0 && keys.length >= total);
+            } catch (e) {
+                // 確認できない場合は未保存表示のままにしておく
+            }
+        }
+
         // ダウンロード進捗を表示する専用トースト（完了までは自動で消えない）
         let progressToastEl = null;
         function updateDownloadProgress(done, total) {
@@ -867,29 +926,23 @@
                 return;
             }
 
-            // 対象タイルの座標一覧を作成
-            let tiles = [];
-            for (let z = OFFLINE_MIN_ZOOM; z <= OFFLINE_MAX_ZOOM; z++) {
-                const t1 = lonLatToTile(MAP_BOUNDS.north, MAP_BOUNDS.west, z); // 北西端
-                const t2 = lonLatToTile(MAP_BOUNDS.south, MAP_BOUNDS.east, z); // 南東端
-                const xMin = Math.min(t1.x, t2.x), xMax = Math.max(t1.x, t2.x);
-                const yMin = Math.min(t1.y, t2.y), yMax = Math.max(t1.y, t2.y);
-                for (let x = xMin; x <= xMax; x++) {
-                    for (let y = yMin; y <= yMax; y++) {
-                        tiles.push({ x, y, z });
-                    }
-                }
+            const tiles = getOfflineTileList();
+            const total = tiles.length;
+            const cache = await caches.open(TILE_CACHE_NAME);
+
+            // 既に全タイルが保存済みなら通信せずに終了（再タップ時の無駄な負荷を避ける）
+            const existingKeys = await cache.keys();
+            if (total > 0 && existingKeys.length >= total) {
+                showToast('オフライン地図は既に最新の状態です');
+                setDownloadButtonReady(true);
+                return;
             }
 
-            const total = tiles.length;
             let done = 0;
-
             btnDownloadMap.disabled = true;
             btnDownloadMap.classList.add('opacity-60');
             btnDownloadMapLabel.innerText = '保存中...';
             updateDownloadProgress(0, total);
-
-            const cache = await caches.open(TILE_CACHE_NAME);
 
             // OpenStreetMapのタイルサーバーに配慮し、同時接続数と間隔を抑えて取得する
             // （一度に大量・高頻度でリクエストする「一括ダウンロード」的な使い方は
@@ -902,10 +955,7 @@
             async function worker() {
                 while (index < tiles.length) {
                     const t = tiles[index++];
-                    const url = OSM_TILE_URL_TEMPLATE
-                        .replace('{z}', t.z)
-                        .replace('{x}', t.x)
-                        .replace('{y}', t.y);
+                    const url = tileToUrl(t);
                     try {
                         const already = await cache.match(url);
                         if (!already) {
@@ -929,15 +979,17 @@
                 await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
                 if (failed === 0) {
                     showToast(`地図データをオフライン保存しました（${total}枚）`);
+                    setDownloadButtonReady(true);
                 } else {
                     showToast(`保存が完了しました（一部失敗: ${failed}枚 / 全${total}枚）`);
+                    setDownloadButtonReady(false);
                 }
             } catch (e) {
                 showToast('地図データの保存中にエラーが発生しました');
+                setDownloadButtonReady(false);
             } finally {
                 btnDownloadMap.disabled = false;
                 btnDownloadMap.classList.remove('opacity-60');
-                btnDownloadMapLabel.innerText = 'オフライン用に地図を保存';
             }
         }
 
@@ -945,7 +997,8 @@
 
         window.onload = () => {
             initMap();
-            
+            refreshDownloadButtonState();
+
             // 画面リサイズ時の対応 (PC <-> モバイル のレイアウト切り替え)
             window.addEventListener('resize', () => {
                 map.invalidateSize();
