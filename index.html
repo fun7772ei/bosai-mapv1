@@ -384,19 +384,29 @@
         // デフォルト中心（総社市役所付近）
         const defaultCenter = [34.675, 133.74];
 
+        // ================= マップの表示可能範囲 =================
+        // 全避難所（88件）の緯度経度の実際の分布は
+        // 北緯34.645〜34.759 / 東経133.634〜133.792 に収まっているため、
+        // それに数km分の余白を足した範囲だけをパン可能範囲・ダウンロード対象範囲とする。
+        // （以前は総社市全体+周辺を広めに取った範囲だったため、実際に避難所がない
+        // 　外周部分まで大量にタイルを持っていた）
+        // マップの表示範囲を変える場合はここだけ書き換えればよい。
+        const MAP_BOUNDS = { south: 34.61, west: 133.60, north: 34.80, east: 133.83 };
+
         // ================= オフライン地図保存 設定 =================
         // タイルの取得元URL（サブドメインを固定してキャッシュを一貫させる）
         const OSM_TILE_URL_TEMPLATE = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
         // Service Worker (service-worker.js) の TILE_CACHE と同じ名前にすること
         const TILE_CACHE_NAME = 'hinanjo-tiles-v1';
-        // 総社市の表示可能範囲（initMapのsojaBoundsと合わせる）
-        const OFFLINE_BOUNDS = { south: 34.580, west: 133.550, north: 34.820, east: 133.880 };
-        // 事前ダウンロードするズーム範囲。広げるとタイル数が指数的に増えるため
-        // (目安: z11〜15で約1,150枚、z16まで広げると約4,450枚)、既定は15までにしている。
+        // 事前ダウンロードするズーム範囲。広げるとタイル数が指数的に増える。
+        // MAP_BOUNDSの範囲では目安として z11〜15で合計 約660枚
+        // （参考: 以前の広い範囲だと同じz11〜15で約1,150枚だった）。
+        // z16まで広げると+約2,500枚、z17まで広げるとさらに+約1万枚と急増するため注意。
         // OpenStreetMapのタイルサーバーは大量の自動一括取得を想定していないため、
-        // 範囲を広げすぎず、必要な時にだけ実行することを推奨。
+        // 範囲やズームを広げすぎず、必要な時にだけ実行することを推奨。
         const OFFLINE_MIN_ZOOM = 11;
         const OFFLINE_MAX_ZOOM = 15;
+
 
         // DOM Elements
         const locationWindow = document.getElementById('location-window');
@@ -427,10 +437,11 @@
         const btnDownloadMapLabel = document.getElementById('btn-download-map-label');
 
         function initMap() {
-            // 読み込み・移動範囲を総社市周辺に制限
+            // 読み込み・移動範囲を総社市周辺（避難所の分布範囲＋余白）に制限
+            // 範囲はMAP_BOUNDS（オフライン保存と共通）を使用
             const sojaBounds = L.latLngBounds(
-                [34.580, 133.550], // 南西端
-                [34.820, 133.880]  // 北東端
+                [MAP_BOUNDS.south, MAP_BOUNDS.west], // 南西端
+                [MAP_BOUNDS.north, MAP_BOUNDS.east]  // 北東端
             );
 
             map = L.map('map', {
@@ -859,8 +870,8 @@
             // 対象タイルの座標一覧を作成
             let tiles = [];
             for (let z = OFFLINE_MIN_ZOOM; z <= OFFLINE_MAX_ZOOM; z++) {
-                const t1 = lonLatToTile(OFFLINE_BOUNDS.north, OFFLINE_BOUNDS.west, z); // 北西端
-                const t2 = lonLatToTile(OFFLINE_BOUNDS.south, OFFLINE_BOUNDS.east, z); // 南東端
+                const t1 = lonLatToTile(MAP_BOUNDS.north, MAP_BOUNDS.west, z); // 北西端
+                const t2 = lonLatToTile(MAP_BOUNDS.south, MAP_BOUNDS.east, z); // 南東端
                 const xMin = Math.min(t1.x, t2.x), xMax = Math.max(t1.x, t2.x);
                 const yMin = Math.min(t1.y, t2.y), yMax = Math.max(t1.y, t2.y);
                 for (let x = xMin; x <= xMax; x++) {
