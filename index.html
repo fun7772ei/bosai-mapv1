@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>避難所案内マップ - Material You</title>
+
+    <!-- ================= PWA設定 ================= -->
+    <link rel="manifest" href="./manifest.json">
+    <meta name="theme-color" content="#006a60">
+    <meta name="description" content="現在地周辺の避難所・避難場所を検索できる地図アプリ">
+
+    <!-- ファビコン -->
+    <link rel="icon" type="image/png" sizes="32x32" href="./icons/favicon-32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="./icons/favicon-16.png">
+
+    <!-- iOS向けホーム画面設定 -->
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="避難所マップ">
+
+    <!-- Android向け設定 -->
+    <meta name="mobile-web-app-capable" content="yes">
+
+    <!-- Leaflet.js CDN -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Google Fonts: Noto Sans JP & Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+JP:wght@300;400;500;700;900&display=swap" rel="stylesheet">
+
+    <!-- Material You (Material 3) Style Tokens -->
+    <style>
+        :root {
+            /* M3 Tonal Palette (Sage Green & Mint Concept) */
+            --md-primary: #006a60;
+            --md-on-primary: #ffffff;
+            --md-primary-container: #9cf1e4;
+            --md-on-primary-container: #00201c;
+            --md-secondary-container: #dae5e1;
+            --md-on-secondary-container: #191c1b;
+            --md-surface: #f4faf8;
+            --md-surface-dim: #e5ebe9;
+            --md-surface-container: #e9f0ee;
+            --md-surface-container-high: #dee5e2;
+            --md-on-surface: #171d1b;
+            --md-on-surface-variant: #3f4946;
+            --md-outline: #6f7976;
+            --md-outline-variant: #bec9c5;
+        }
+
+        body {
+            font-family: 'Inter', 'Noto Sans JP', sans-serif;
+            background-color: var(--md-surface);
+            color: var(--md-on-surface);
+        }
+
+        /* Leaflet Container Tweaks */
+        .leaflet-container {
+            font-family: inherit;
+            background-color: var(--md-surface-dim);
+        }
+
+        /* Material Ripple effect */
+        .m3-interactive {
+            position: relative;
+            overflow: hidden;
+            transition: all 0.2s cubic-bezier(0.2, 0, 0, 1);
+        }
+        .m3-interactive::after {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: currentColor;
+            opacity: 0;
+            transition: opacity 0.15s linear;
+            pointer-events: none;
+        }
+        .m3-interactive:hover::after {
+            opacity: 0.08;
+        }
+        .m3-interactive:active::after {
+            opacity: 0.16;
+        }
+
+        /* Custom Scrollbar for M3 */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--md-outline-variant); border-radius: 9999px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--md-outline); }
+
+        /* Bottom Sheet Transition (Mobile) */
+        @media (max-width: 768px) {
+            .mobile-bottom-sheet {
+                transition: transform 0.35s cubic-bezier(0.1, 0.76, 0.55, 0.94);
+            }
+        }
+    </style>
+</head>
+<body class="overflow-hidden h-screen w-full select-none">
+
+    <div id="app" class="relative w-full h-full flex flex-col md:flex-row overflow-hidden">
+        
+        <!-- ================= マップエリア (背面全画面) ================= -->
+        <div id="map-pane" class="relative flex-1 h-full z-0">
+            <!-- Leaflet地図 -->
+            <div id="map" class="w-full h-full"></div>
+
+            <!-- ================= 現在地設定別ウィンドウ (マップ左上配置) ================= -->
+            <div id="location-window" class="absolute top-4 left-4 z-[1000] w-[calc(100%-32px)] sm:w-[320px] bg-white/90 backdrop-blur-md p-4 rounded-3xl shadow-xl border border-gray-200/50 flex flex-col gap-3 transition-all duration-300">
+                <!-- ウィンドウヘッダー -->
+                <div class="flex items-center justify-between border-b border-gray-100 pb-2">
+                    <div class="flex items-center gap-2">
+                        <span class="w-2.5 h-2.5 rounded-full bg-teal-600 animate-pulse"></span>
+                        <h2 class="text-sm font-bold text-gray-800">現在地設定</h2>
+                    </div>
+                    <!-- ステータス表示バッジ -->
+                    <div id="current-location-display" class="text-[10px] font-bold px-2.5 py-0.5 rounded-full" style="background-color: var(--md-surface-container-high); color: var(--md-on-surface-variant);">
+                        未設定
+                    </div>
+                </div>
+                <!-- ボタン選択エリア -->
+                <div class="grid grid-cols-2 gap-2">
+                    <!-- GPSで取得 -->
+                    <button id="btn-gps" style="background-color: var(--md-primary-container); color: var(--md-on-primary-container);" class="m3-interactive flex flex-col items-center justify-center py-2.5 px-2 rounded-2xl shadow-sm hover:shadow-md hover:scale-[1.02] active:scale-[0.98] font-bold text-xs gap-1">
+                        <svg width="20" height="20" fill="currentColor" viewBox="0 0 256 256"><path d="M224,120H183.33A56.12,56.12,0,0,0,136,72.67V32a8,8,0,0,0-16,0V72.67A56.12,56.12,0,0,0,72.67,120H32a8,8,0,0,0,0,16H72.67A56.12,56.12,0,0,0,120,183.33V224a8,8,0,0,0,16,0V183.33A56.12,56.12,0,0,0,183.33,136H224a8,8,0,0,0,0-16Zm-96,40a32,32,0,1,1,32-32A32,32,0,0,1,128,160Z"></path></svg>
+                        GPSで取得
+                    </button>
+                    <!-- 地図から選択 -->
+                    <button id="btn-map-select" style="background-color: var(--md-surface); color: var(--md-primary); border: 1px solid var(--md-outline-variant);" class="m3-interactive flex flex-col items-center justify-center py-2.5 px-2 rounded-2xl shadow-sm hover:shadow-md hover:scale-[1.02] active:scale-[0.98] font-bold text-xs gap-1">
+                        <svg width="20" height="20" fill="currentColor" viewBox="0 0 256 256"><path d="M228.92,49.69a8,8,0,0,0-6.86-1.45L160.93,63.52,99.58,32.84a8,8,0,0,0-7.16,0L27.08,65.3A8,8,0,0,0,24,72.49v136a8,8,0,0,0,11.08,7.38l61.13-21.58,61.35,30.68a8.15,8.15,0,0,0,3.58.84,8,8,0,0,0,3.58-.84l65.34-32.66A8,8,0,0,0,232,185.51V56A8,8,0,0,0,228.92,49.69ZM96,52.53l56,28v123l-56-28ZM40,79.52l40-14.12v123L40,202.48Zm176,97-40,20v-123l40-14.12Z"></path></svg>
+                        地図から選択
+                    </button>
+                </div>
+            </div>
+
+            <!-- 現在地決定モード時の中央ピン (シンプルなグレー十字ヘアライン) -->
+            <div id="center-pin" class="hidden absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-[1000] pointer-events-none">
+                <svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <line x1="20" y1="0" x2="20" y2="40" stroke="#6b7280" stroke-width="2.5" />
+                    <line x1="0" y1="20" x2="40" y2="20" stroke="#6b7280" stroke-width="2.5" />
+                </svg>
+            </div>
+
+            <!-- 現在地決定アクションバー (より直感的でわかりやすいUIに改善) -->
+            <div id="set-location-container" class="hidden absolute bottom-24 md:bottom-10 left-1/2 transform -translate-x-1/2 z-[1000] flex flex-col items-center gap-3 w-[90%] max-w-sm">
+                <!-- ガイドメッセージ -->
+                <div class="bg-white/95 backdrop-blur px-5 py-2.5 rounded-full shadow-lg text-sm font-bold text-center text-gray-800 border border-gray-200">
+                    マップを動かして現在地を合わせてください
+                </div>
+                <!-- ボタン群 -->
+                <div class="flex gap-2 w-full">
+                    <button id="btn-cancel-location" class="flex-1 m3-interactive font-bold py-3.5 px-4 rounded-full shadow-md bg-white text-gray-700 border border-gray-300 hover:bg-gray-50 active:scale-[0.97] transition-transform text-sm">
+                        キャンセル
+                    </button>
+                    <button id="btn-confirm-location" class="flex-[1.5] m3-interactive font-bold py-3.5 px-4 rounded-full shadow-lg hover:shadow-xl hover:scale-[1.02] active:scale-[0.98] transition-transform flex items-center justify-center gap-2 text-white text-sm" style="background-color: var(--md-primary);">
+                        <svg width="18" height="18" fill="currentColor" viewBox="0 0 256 256"><path d="M128,16a88.1,88.1,0,0,0-88,88c0,75.3,80,132.17,83.41,134.55a8,8,0,0,0,9.18,0C136,236.17,216,179.3,216,104A88.1,88.1,0,0,0,128,16Zm0,56a32,32,0,1,1-32,32A32,32,0,0,1,128,72Z"></path></svg>
+                        ここにする
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ================= 操作パネル (右側へ変更) ================= -->
+        <!-- デスクトップ：右側浮遊Side Sheet、モバイル：スライド式ボトムシート -->
+        <div id="control-pane" style="background-color: var(--md-surface);" class="mobile-bottom-sheet fixed md:absolute bottom-0 left-0 right-0 md:top-4 md:bottom-4 md:right-4 md:left-auto md:w-[380px] h-[70vh] md:h-auto z-[1001] rounded-t-[28px] md:rounded-[28px] shadow-2xl flex flex-col border border-[var(--md-outline-variant)]/30 md:border-none translate-y-[calc(70vh-56px)] md:translate-y-0">
+            
+            <!-- ボトムシート用ドラッグハンドル (モバイルのみ) -->
+            <div id="drag-handle-container" class="md:hidden w-full h-14 flex items-center justify-center cursor-pointer shrink-0">
+                <div class="w-10 h-1 rounded-full" style="background-color: var(--md-outline-variant);"></div>
+            </div>
+
+            <!-- ヘッダー -->
+            <div class="px-5 pb-3 pt-2 md:pt-6 shrink-0">
+                <div class="flex items-center justify-between">
+                    <h1 class="text-xl font-bold tracking-tight" style="color: var(--md-on-surface);">避難所案内マップ</h1>
+                </div>
+            </div>
+
+            <!-- 絞り込みフィルターセクション (M3 Filter Chips 横スクロール) -->
+            <div class="px-5 py-2 shrink-0 border-b border-[var(--md-outline-variant)]/30">
+                <!-- 災害種別チップス -->
+                <div class="mb-3">
+                    <span class="text-xs font-bold uppercase tracking-wider block mb-1.5" style="color: var(--md-on-surface-variant);">対応災害</span>
+                    <div class="flex flex-wrap gap-2">
+                        <button class="filter-chip m3-interactive flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border border-[var(--md-outline)]" data-group="disaster" data-value="earthquake" style="background-color: transparent; color: var(--md-on-surface);">
+                            <span class="check-icon hidden">✓</span>地震
+                        </button>
+                        <button class="filter-chip m3-interactive flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border border-[var(--md-outline)]" data-group="disaster" data-value="landslide" style="background-color: transparent; color: var(--md-on-surface);">
+                            <span class="check-icon hidden">✓</span>土砂災害
+                        </button>
+                        <button class="filter-chip m3-interactive flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border border-[var(--md-outline)]" data-group="disaster" data-value="flood" style="background-color: transparent; color: var(--md-on-surface);">
+                            <span class="check-icon hidden">✓</span>河川氾濫
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 施設区分チップス -->
+                <div>
+                    <span class="text-xs font-bold uppercase tracking-wider block mb-1.5" style="color: var(--md-on-surface-variant);">施設区分</span>
+                    <div class="flex flex-wrap gap-2">
+                        <button class="filter-chip m3-interactive flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border border-[var(--md-outline)]" data-group="type" data-value="指定避難所" style="background-color: transparent; color: var(--md-on-surface);">
+                            <span class="check-icon hidden">✓</span>指定避難所
+                        </button>
+                        <button class="filter-chip m3-interactive flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border border-[var(--md-outline)]" data-group="type" data-value="指定緊急避難場所" style="background-color: transparent; color: var(--md-on-surface);">
+                            <span class="check-icon hidden">✓</span>緊急避難所
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 避難所リストエリア (スクロール可能) -->
+            <div class="flex-1 overflow-y-auto px-5 py-4">
+                <div class="flex items-center justify-between mb-3 shrink-0">
+                    <span id="shelter-count" class="text-xs font-bold" style="color: var(--md-on-surface-variant);">施設一覧</span>
+                    <span id="filter-active-indicator" class="hidden text-xs font-bold px-2.5 py-0.5 rounded-full" style="background-color: var(--md-primary-container); color: var(--md-on-primary-container);">
+                        フィルター適用中
+                    </span>
+                </div>
+                <ul id="shelter-list" class="space-y-3">
+                    <!-- JavaScriptで動的ロード -->
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <!-- トースト通知 -->
+    <div id="toast-container" class="fixed top-4 left-1/2 transform -translate-x-1/2 md:left-auto md:right-4 md:transform-none z-[2000] flex flex-col gap-2 pointer-events-none w-[90%] max-w-sm"></div>
+
+    <script>
+        // グローバルエラーハンドラ：「Script error.」の中身をコンソールに残す
+        window.addEventListener('error', function (e) {
+            console.error('[避難所マップ] 実際のエラー内容:', e.message, e.filename, e.lineno, e.error);
+        });
+        window.addEventListener('unhandledrejection', function (e) {
+            console.error('[避難所マップ] Promiseエラー:', e.reason);
+        });
+
+        // 「総社市_避難所一覧」の公式指定避難所データ 88件
+        // ファクトチェック済み（2026-07-16）：総社市公式避難所一覧PDFおよびGoogleマップ上の
+        // 各施設の公式住所と緯度経度を突合し、100m以上のズレがあった座標・
+        // PDFと一致しなかった対応災害種別・住所の誤記を修正しています。
+        // 修正箇所には shelter オブジェクトの直後に verified コメントを付与しています。
+        const MOCK_SHELTERS = [
+            { id: 1, name: "総社小学校", lat: 34.678323, lng: 133.755722, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市総社3-13-1", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 2, name: "総社中央小学校", lat: 34.679642, lng: 133.736457, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市門田959", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 3, name: "総社北小学校", lat: 34.688031, lng: 133.748052, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市泉2-2", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 4, name: "総社西中学校", lat: 34.675296, lng: 133.741864, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市駅前1-10-1", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 5, name: "総社東中学校", lat: 34.673165, lng: 133.757406, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市井手565", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 6, name: "総社幼稚園", lat: 34.676042, lng: 133.754097, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市総社2-17-15", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 7, name: "総社南幼稚園", lat: 34.671782, lng: 133.748356, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市中央3-9-101", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 8, name: "総社北幼稚園", lat: 34.688094, lng: 133.750302, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市泉1-192", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 9, name: "いじりの認定こども園", lat: 34.680034, lng: 133.736246, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市井尻野1722", disasters: ["earthquake", "flood", "landslide"] }, // verified: 元の緯度経度は約600mずれていたため修正
+            { id: 10, name: "総合文化センター（中央公民館）　（市民会館を除く）", lat: 34.672698, lng: 133.747834, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市中央3-1-102", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 11, name: "中央公民館総社分館", lat: 34.677437, lng: 133.753633, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市総社2-18-18", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 12, name: "中央公民館総社北分館", lat: 34.689066, lng: 133.747527, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市小寺1281-1", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 13, name: "中央公民館浅尾分館", lat: 34.680303, lng: 133.737545, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市門田956-1", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 14, name: "働く婦人の家", lat: 34.679292, lng: 133.75643, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市総社3-15-1", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 15, name: "岡山県立総社高等学校", lat: 34.67642, lng: 133.756242, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市総社3-9-1", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 16, name: "常盤小学校", lat: 34.666841, lng: 133.738171, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市駅南1-13-13", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 17, name: "常盤幼稚園", lat: 34.667609, lng: 133.738381, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市駅南1-13-8", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 18, name: "下水処理場", lat: 34.662761, lng: 133.737282, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市三輪820", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 19, name: "総社運動公園（きびじアリーナ・サブアリーナ）", lat: 34.664354, lng: 133.747584, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市三輪1300", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 20, name: "常盤集会所", lat: 34.665091, lng: 133.746543, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市三輪1256-1", disasters: ["flood", "landslide"] },
+            { id: 21, name: "中央保育所", lat: 34.668038, lng: 133.739725, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市駅南1-8-1", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 22, name: "武道館", lat: 34.66633, lng: 133.748309, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市真壁423-1", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 23, name: "中央公民館常盤分館", lat: 34.662728, lng: 133.738185, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市三輪821", disasters: ["flood", "landslide"] },
+            { id: 24, name: "中央公民館常盤第2分館", lat: 34.671636, lng: 133.733779, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市真壁1023", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 25, name: "中原会館", lat: 34.670715, lng: 133.728297, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市中原1005-6", disasters: ["flood", "landslide"] },
+            { id: 26, name: "やすらぎの家", lat: 34.664685, lng: 133.729241, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市中原574-1", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 27, name: "サンワーク総社", lat: 34.669022, lng: 133.741158, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市駅南1-5-7", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 28, name: "岡山県立総社南高等学校", lat: 34.662883, lng: 133.740532, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市三輪626-1", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 29, name: "三須幼稚園", lat: 34.679022, lng: 133.777654, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市上林303-1", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 30, name: "上林会館", lat: 34.679022, lng: 133.777654, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市上林303-1", disasters: ["flood", "landslide"] },
+            { id: 31, name: "東公民館三須分館", lat: 34.679022, lng: 133.777654, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市上林303-1", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 32, name: "総社東小学校", lat: 34.681805, lng: 133.779492, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市南溝手480", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 33, name: "服部幼稚園", lat: 34.684836, lng: 133.780441, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市窪木885-5", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 34, name: "東公民館", lat: 34.680994, lng: 133.781072, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市南溝手477-7", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 35, name: "長良文化センター", lat: 34.692586, lng: 133.792022, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市長良336", disasters: ["flood", "landslide"] },
+            { id: 36, name: "東公民館服部分館", lat: 34.684178, lng: 133.779898, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市南溝手265-3", disasters: ["earthquake", "flood", "landslide"] }, // verified: 座標を実際の施設所在地に合わせて修正（約60mのズレ）
+            { id: 37, name: "岡山県立大学", lat: 34.692686, lng: 133.781629, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市窪木111", disasters: ["earthquake", "flood", "landslide"] }, // verified: 元の緯度経度は約250mずれていたため修正
+            { id: 38, name: "阿曽小学校", lat: 34.70519, lng: 133.784933, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市西阿曽207-1", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 39, name: "東公民館阿曽分館", lat: 34.703696, lng: 133.784486, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市西阿曽188-1", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 40, name: "阿曽幼稚園", lat: 34.704032, lng: 133.785317, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市西阿曽141", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 41, name: "池田小学校", lat: 34.736412, lng: 133.72501, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市見延699", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 42, name: "池田幼稚園", lat: 34.736312, lng: 133.723958, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市見延640", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 43, name: "中央公民館池田分館", lat: 34.73602, lng: 133.724841, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市見延639-1", disasters: ["earthquake", "flood", "landslide"] }, // verified: 住所の誤記（638→639-1）をPDF・Google両方の情報に合わせ修正
+            { id: 44, name: "秦小学校", lat: 34.69863, lng: 133.71966, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市秦2815-2", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 45, name: "総社中学校", lat: 34.677628, lng: 133.703565, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市秦540", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 46, name: "秦幼稚園", lat: 34.69826, lng: 133.720474, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市秦2987", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 47, name: "西公民館", lat: 34.676723, lng: 133.704495, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市秦350", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 48, name: "西公民館秦分館", lat: 34.696194, lng: 133.723824, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市秦3465-1", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 49, name: "神在小学校", lat: 34.668738, lng: 133.718972, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市富原422", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 50, name: "神在幼稚園", lat: 34.66826, lng: 133.718056, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市富原407-1", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 51, name: "西公民館神在分館", lat: 34.667493, lng: 133.719922, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市富原903-1", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 52, name: "総社西小学校", lat: 34.67687, lng: 133.687602, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市久代4386-2", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 53, name: "久代幼稚園", lat: 34.676076, lng: 133.68828, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市久代4584", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 54, name: "西公民館久代分館", lat: 34.675262, lng: 133.687397, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市久代4482-1", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 55, name: "山田幼稚園", lat: 34.674243, lng: 133.661619, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市山田205-1", disasters: ["earthquake", "flood"] },
+            { id: 56, name: "西公民館山田分館", lat: 34.674509, lng: 133.661036, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市山田203-2", disasters: ["earthquake", "flood"] },
+            { id: 57, name: "新本小学校", lat: 34.666493, lng: 133.647016, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市新本7288", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 58, name: "新本幼稚園", lat: 34.66631, lng: 133.646194, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市新本7274", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 59, name: "西公民館新本分館", lat: 34.664846, lng: 133.655206, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市新本7743", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 60, name: "昭和五つ星学園1-5（旧昭和小学校）", lat: 34.718591, lng: 133.654813, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市美袋207", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 61, name: "旧維新小学校", lat: 34.729521, lng: 133.634651, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市原2229-1", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 62, name: "昭和五つ星学園6-9（旧昭和中学校）", lat: 34.72148, lng: 133.646803, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市美袋1636", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 63, name: "昭和五つ星学園幼稚園（旧昭和幼稚園）", lat: 34.719113, lng: 133.654419, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市美袋245-1", disasters: ["earthquake", "flood"] },
+            { id: 64, name: "旧維新幼稚園", lat: 34.728757, lng: 133.634307, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市原2257-1", disasters: ["earthquake", "flood"] },
+            { id: 65, name: "昭和公民館", lat: 34.719485, lng: 133.653972, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市美袋1915-1", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 66, name: "昭和公民館下倉分館", lat: 34.716552, lng: 133.664557, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市下倉1338-3", disasters: ["earthquake", "flood"] },
+            { id: 67, name: "昭和公民館水内分館", lat: 34.728396, lng: 133.63537, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市原1571", disasters: ["earthquake", "flood", "landslide"] }, // verified: 元の緯度経度は約900mずれていたため修正（Google上の施設名一致箇所に合わせた。番地表記に幅あり、現地確認推奨）
+            { id: 68, name: "昭和公民館富山分館", lat: 34.758742, lng: 133.650725, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市種井1856-1", disasters: ["earthquake", "flood"] },
+            { id: 69, name: "山手小学校", lat: 34.657042, lng: 133.770903, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市岡谷607-2", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 70, name: "山手幼稚園", lat: 34.656158, lng: 133.769972, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市岡谷627", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 71, name: "山手公民館", lat: 34.660052, lng: 133.770417, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市岡谷151-1", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 72, name: "東風館（山手公民館宿分館）", lat: 34.661326, lng: 133.780253, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市宿272-1", disasters: ["flood", "landslide"] },
+            { id: 73, name: "西郡公正館（山手公民館西郡分館）", lat: 34.660197, lng: 133.762984, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市西郡857-1", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 74, name: "山手公民館岡谷分館", lat: 34.654685, lng: 133.772026, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市岡谷718-4", disasters: ["earthquake", "flood", "landslide"] }, // verified: 元の緯度経度は約270mずれていたため修正
+            { id: 75, name: "清音小学校", lat: 34.650445, lng: 133.739494, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市清音軽部666-1", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 76, name: "清音公民館", lat: 34.645973, lng: 133.738722, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市清音軽部1135", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 77, name: "清音福祉センター", lat: 34.645973, lng: 133.738722, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市清音軽部1135", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 78, name: "きよね認定こども園", lat: 34.650359, lng: 133.73838, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市清音軽部762", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 79, name: "ひだまりの家", lat: 34.653345, lng: 133.734683, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市清音柿木620-1", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 80, name: "さんあいの家", lat: 34.645135, lng: 133.731597, type: ["指定避難所", "指定緊急避難場所"], desc: "岡山県総社市清音上中島266-1", disasters: ["earthquake", "flood", "landslide"] }, // verified: 住所の番地誤記（226-1→266-1）と、それに伴う約190mの座標ズレを修正
+            { id: 81, name: "総社北公園　陸上競技場", lat: 34.696538, lng: 133.746497, type: ["指定緊急避難場所"], desc: "岡山県総社市福井1200", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 82, name: "総社運動公園（野球場・多目的広場）", lat: 34.665285, lng: 133.749734, type: ["指定緊急避難場所"], desc: "岡山県総社市三輪1300", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 83, name: "常盤公園", lat: 34.66698, lng: 133.739507, type: ["指定緊急避難場所"], desc: "岡山県総社市駅南1-24-1", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 84, name: "砂川公園駐車場", lat: 34.701096, lng: 133.76067, type: ["指定緊急避難場所"], desc: "岡山県総社市黒尾792", disasters: ["earthquake", "flood", "landslide"] },
+            { id: 85, name: "西公園グラウンド", lat: 34.676381, lng: 133.705401, type: ["指定緊急避難場所"], desc: "岡山県総社市秦358", disasters: ["earthquake", "flood", "landslide"] }, // verified: 座標を約250m修正。対応災害もPDFに合わせ地震のみ→地震・水害・土砂災害に修正
+            { id: 86, name: "西ふれあい広場", lat: 34.664425, lng: 133.681121, type: ["指定緊急避難場所"], desc: "岡山県総社市久代2616-3", disasters: ["earthquake", "flood", "landslide"] }, // verified: 対応災害をPDFに合わせ地震のみ→地震・水害・土砂災害に修正。座標はユーザー提供の実測値（34.664425, 133.681121）に更新（元の座標から約2.6kmのズレを修正）
+            { id: 87, name: "山手スポーツ広場", lat: 34.654162, lng: 133.78163, type: ["指定緊急避難場所"], desc: "岡山県総社市宿1778-1", disasters: ["earthquake", "flood", "landslide"] }, // verified: 座標が約1.3kmずれていたため修正。対応災害もPDFに合わせ地震のみ→地震・水害・土砂災害に修正
+            { id: 88, name: "清音ふるさとふれあい広場", lat: 34.654842, lng: 133.75421, type: ["指定緊急避難場所"], desc: "岡山県総社市清音三因1017-4", disasters: ["earthquake", "flood", "landslide"] } // verified: 座標が約790m（主に経度）ずれていたため修正。対応災害もPDFに合わせ地震のみ→地震・水害・土砂災害に修正
+        ];
+
+        let map;
+        let markers = [];
+        let userMarker = null;
+        let userLocation = null;
+        
+        // フィルター状態
+        let filters = {
+            type: [],
+            disaster: []
+        };
+
+        // デフォルト中心（総社市役所付近）
+        const defaultCenter = [34.675, 133.74];
+
+        // DOM Elements
+        const locationWindow = document.getElementById('location-window');
+        const centerPin = document.getElementById('center-pin');
+        const setLocationContainer = document.getElementById('set-location-container');
+        
+        const btnGps = document.getElementById('btn-gps');
+        const btnMapSelect = document.getElementById('btn-map-select');
+        const btnConfirmLocation = document.getElementById('btn-confirm-location');
+        const btnCancelLocation = document.getElementById('btn-cancel-location');
+        const currentLocationDisplay = document.getElementById('current-location-display');
+        
+        const shelterList = document.getElementById('shelter-list');
+        const shelterCount = document.getElementById('shelter-count');
+        const filterActiveIndicator = document.getElementById('filter-active-indicator');
+        
+        const filterChips = document.querySelectorAll('.filter-chip');
+        const controlPane = document.getElementById('control-pane');
+        const dragHandleContainer = document.getElementById('drag-handle-container');
+        const toastContainer = document.getElementById('toast-container');
+
+        function initMap() {
+            // 読み込み・移動範囲を総社市周辺に制限
+            const sojaBounds = L.latLngBounds(
+                [34.580, 133.550], // 南西端
+                [34.820, 133.880]  // 北東端
+            );
+
+            map = L.map('map', {
+                center: defaultCenter,
+                zoom: 13,
+                minZoom: 11, // ズームアウトしすぎないように制限
+                maxBounds: sojaBounds, // 移動範囲を制限して不要な読み込みを防ぐ
+                maxBoundsViscosity: 1.0, // 境界でピタッと止める
+                zoomControl: false
+            });
+
+            // ズームコントロールの位置を左下に変更
+            L.control.zoom({ position: 'bottomleft' }).addTo(map);
+
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; OpenStreetMap contributors'
+            }).addTo(map);
+
+            renderMarkers();
+            renderList();
+        }
+
+        // カスタムのSVGアイコン (Material 3スタイル)
+        const M3_SHELTER_ICON = `
+            <svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
+                <!-- やわらかいドロップシャドウ -->
+                <ellipse cx="20" cy="37" rx="10" ry="3" fill="rgba(0,0,0,0.15)" />
+                
+                <!-- マップピンの形状（白いフチ） -->
+                <path d="M20,2 C10.6,2 3,9.6 3,19 C3,30 20,39 20,39 C20,39 37,30 37,19 C37,9.6 29.4,2 20,2 Z" fill="#ffffff" />
+                
+                <!-- マップピンの形状（メインカラー） -->
+                <path d="M20,4.5 C12,4.5 5.5,11 5.5,19 C5.5,28.5 20,36.5 20,36.5 C20,36.5 34.5,28.5 34.5,19 C34.5,11 28,4.5 20,4.5 Z" fill="var(--md-primary)" />
+                
+                <!-- 中央の白丸 -->
+                <circle cx="20" cy="18" r="6.5" fill="#ffffff" />
+            </svg>
+        `;
+
+        function getFilteredShelters() {
+            return MOCK_SHELTERS.filter(shelter => {
+                // 施設区分のフィルター (OR条件)
+                if (filters.type.length > 0) {
+                    const hasType = filters.type.some(t => shelter.type.includes(t));
+                    if (!hasType) return false;
+                }
+                
+                // 災害のフィルター (AND条件 - 選択した全ての災害に対応しているか)
+                if (filters.disaster.length > 0) {
+                    const hasAllDisasters = filters.disaster.every(d => shelter.disasters.includes(d));
+                    if (!hasAllDisasters) return false;
+                }
+                
+                return true;
+            });
+        }
+
+        function renderMarkers() {
+            // 古いマーカーを削除
+            markers.forEach(m => map.removeLayer(m.marker));
+            markers = [];
+
+            const customIcon = L.divIcon({
+                html: M3_SHELTER_ICON,
+                className: 'bg-transparent',
+                iconSize: [40, 40],
+                iconAnchor: [20, 39] // ピンの先端が正確な位置を指すようにアンカーを調整
+            });
+
+            const filtered = getFilteredShelters();
+
+            filtered.forEach(shelter => {
+                const marker = L.marker([shelter.lat, shelter.lng], { icon: customIcon }).addTo(map);
+                
+                marker.on('click', () => {
+                    map.flyTo([shelter.lat, shelter.lng], 16, { duration: 0.8 });
+                    highlightCard(shelter.id);
+                    // モバイル時はマーカータップでシートを下げる
+                    if (window.innerWidth < 768) expandBottomSheet(false);
+                });
+
+                markers.push({ id: shelter.id, marker: marker });
+            });
+        }
+
+        function renderList() {
+            shelterList.innerHTML = '';
+            
+            let displayList = getFilteredShelters();
+            
+            // 現在地があれば距離を計算して近い順にソート
+            if (userLocation) {
+                displayList.forEach(s => {
+                    s.distance = map.distance([userLocation.lat, userLocation.lng], [s.lat, s.lng]);
+                });
+                displayList.sort((a, b) => a.distance - b.distance);
+            }
+
+            shelterCount.innerText = `施設一覧 (${displayList.length}件)`;
+            
+            // フィルター適用中インジケーターの切り替え
+            if (filters.type.length > 0 || filters.disaster.length > 0) {
+                filterActiveIndicator.classList.remove('hidden');
+            } else {
+                filterActiveIndicator.classList.add('hidden');
+            }
+
+            if (displayList.length === 0) {
+                shelterList.innerHTML = '<div class="p-4 text-center text-sm text-gray-500">条件に一致する避難所がありません。</div>';
+                return;
+            }
+
+            displayList.forEach(shelter => {
+                const li = document.createElement('li');
+                li.id = `card-${shelter.id}`;
+                li.className = 'm3-interactive bg-white rounded-2xl p-4 shadow-sm border border-gray-100 cursor-pointer hover:shadow-md transition-shadow';
+                
+                let distHtml = '';
+                if (shelter.distance !== undefined) {
+                    const d = shelter.distance < 1000 ? `${Math.round(shelter.distance)}m` : `${(shelter.distance/1000).toFixed(1)}km`;
+                    distHtml = `<div class="text-[11px] font-bold px-2 py-1 rounded bg-[var(--md-surface-container)] text-[var(--md-on-surface-variant)] inline-block mt-2">現在地から ${d}</div>`;
+                }
+
+                li.innerHTML = `
+                    <h3 class="font-bold text-[15px] mb-1" style="color: var(--md-on-surface);">${shelter.name}</h3>
+                    <p class="text-xs text-gray-500 mb-2">${shelter.desc}</p>
+                    <div class="flex flex-wrap gap-1 mb-1">
+                        ${shelter.type.map(t => `<span class="bg-[var(--md-primary-container)] text-[var(--md-on-primary-container)] px-1.5 py-0.5 rounded text-[10px] font-bold">${t}</span>`).join('')}
+                    </div>
+                    ${distHtml}
+                `;
+                
+                li.addEventListener('click', () => {
+                    map.flyTo([shelter.lat, shelter.lng], 16, { duration: 0.8 });
+                    highlightCard(shelter.id);
+                    // モバイル時はリストアイテムタップでシートを下げる
+                    if (window.innerWidth < 768) expandBottomSheet(false);
+                });
+                
+                shelterList.appendChild(li);
+            });
+        }
+
+        function highlightCard(id) {
+            document.querySelectorAll('#shelter-list li').forEach(c => {
+                c.style.backgroundColor = 'white';
+                c.style.borderColor = '#f3f4f6';
+            });
+            const card = document.getElementById(`card-${id}`);
+            if (card) {
+                card.style.backgroundColor = 'var(--md-surface-container-high)';
+                card.style.borderColor = 'var(--md-outline-variant)';
+                card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+        }
+
+        filterChips.forEach(chip => {
+            chip.addEventListener('click', () => {
+                const group = chip.dataset.group;
+                const val = chip.dataset.value;
+                const icon = chip.querySelector('.check-icon');
+
+                // Toggle active state manually
+                const isActive = chip.classList.toggle('active-filter');
+                
+                if (isActive) {
+                    chip.style.backgroundColor = 'var(--md-secondary-container)';
+                    chip.style.borderColor = 'transparent';
+                    icon.classList.remove('hidden');
+                    filters[group].push(val);
+                } else {
+                    chip.style.backgroundColor = 'transparent';
+                    chip.style.borderColor = 'var(--md-outline)';
+                    icon.classList.add('hidden');
+                    filters[group] = filters[group].filter(v => v !== val);
+                }
+                
+                renderMarkers();
+                renderList();
+            });
+        });
+
+        function setUserLocation(lat, lng, modeName) {
+            userLocation = { lat, lng };
+            
+            if (userMarker) map.removeLayer(userMarker);
+            
+            // アニメーションを削除したシンプルな現在地アイコン
+            const userIcon = L.divIcon({
+                className: 'bg-transparent',
+                html: `
+                    <div class="relative w-12 h-12">
+                        <div class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-10 h-10 bg-blue-500 rounded-full opacity-20"></div>
+                        <div class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-5 h-5 rounded-full border-2 border-white shadow-md z-10" style="background-color: #1A73E8;"></div>
+                    </div>
+                `,
+                iconSize: [48, 48],
+                iconAnchor: [24, 24]
+            });
+            
+            userMarker = L.marker([lat, lng], { icon: userIcon, zIndexOffset: 1000 }).addTo(map);
+            
+            currentLocationDisplay.innerText = modeName;
+            currentLocationDisplay.style.backgroundColor = 'var(--md-primary)';
+            currentLocationDisplay.style.color = 'var(--md-on-primary)';
+            
+            renderList();
+        }
+
+        // GPSボタン処理
+        btnGps.addEventListener('click', () => {
+            const originalHtml = btnGps.innerHTML;
+            btnGps.innerHTML = '<span class="text-xs font-bold">取得中...</span>';
+            
+            if (!navigator.geolocation) {
+                showToast("GPSがサポートされていません");
+                btnGps.innerHTML = originalHtml;
+                return;
+            }
+            
+            navigator.geolocation.getCurrentPosition(
+                (pos) => {
+                    const lat = pos.coords.latitude;
+                    const lng = pos.coords.longitude;
+                    setUserLocation(lat, lng, "GPS");
+                    map.flyTo([lat, lng], 15, { duration: 1 });
+                    showToast("GPSで現在地を取得しました");
+                    btnGps.innerHTML = originalHtml;
+                },
+                (err) => {
+                    showToast("GPSの取得に失敗しました");
+                    btnGps.innerHTML = originalHtml;
+                },
+                { enableHighAccuracy: true, timeout: 10000 }
+            );
+        });
+
+        // マップから選択モード
+        btnMapSelect.addEventListener('click', () => {
+            locationWindow.classList.add('hidden');
+            centerPin.classList.remove('hidden');
+            setLocationContainer.classList.remove('hidden');
+            
+            if(window.innerWidth < 768) {
+                expandBottomSheet(false);
+            }
+            showToast("マップを動かして現在地を合わせてください");
+        });
+
+        // 現在地決定ボタン
+        btnConfirmLocation.addEventListener('click', () => {
+            const center = map.getCenter();
+            setUserLocation(center.lat, center.lng, "手動");
+            showToast("手動で現在地を設定しました");
+            exitMapSelectMode();
+        });
+
+        // 現在地選択キャンセル
+        btnCancelLocation.addEventListener('click', () => {
+            exitMapSelectMode();
+        });
+
+        function exitMapSelectMode() {
+            locationWindow.classList.remove('hidden');
+            centerPin.classList.add('hidden');
+            setLocationContainer.classList.add('hidden');
+        }
+
+        let startY = 0;
+        let isExpanded = false;
+        
+        function expandBottomSheet(expand) {
+            isExpanded = expand;
+            if (expand) {
+                // Expand (show full list)
+                controlPane.style.transform = 'translateY(0)';
+            } else {
+                // Collapse (show only header and chips)
+                controlPane.style.transform = 'translateY(calc(70vh - 56px))';
+            }
+        }
+
+        // ドラッグ操作の実装
+        dragHandleContainer.addEventListener('touchstart', (e) => {
+            startY = e.touches[0].clientY;
+            controlPane.style.transition = 'none';
+        }, {passive: true});
+        
+        dragHandleContainer.addEventListener('touchmove', (e) => {
+            const currentY = e.touches[0].clientY;
+            const deltaY = currentY - startY;
+            
+            if (isExpanded && deltaY > 0) {
+                // 下へドラッグ中
+                controlPane.style.transform = `translateY(${deltaY}px)`;
+            } else if (!isExpanded && deltaY < 0) {
+                // 上へドラッグ中
+                controlPane.style.transform = `translateY(calc(70vh - 56px + ${deltaY}px))`;
+            }
+        }, {passive: true});
+        
+        dragHandleContainer.addEventListener('touchend', (e) => {
+            controlPane.style.transition = 'transform 0.35s cubic-bezier(0.1, 0.76, 0.55, 0.94)';
+            const endY = e.changedTouches[0].clientY;
+            const deltaY = endY - startY;
+            
+            // スワイプ距離が50pxを超えたら状態を切り替え
+            if (Math.abs(deltaY) > 50) {
+                expandBottomSheet(deltaY < 0);
+            } else {
+                // 元に戻す
+                expandBottomSheet(isExpanded);
+            }
+        }, {passive: true});
+        
+        // タップでも切り替え
+        dragHandleContainer.addEventListener('click', () => {
+            expandBottomSheet(!isExpanded);
+        });
+
+        function showToast(message) {
+            const toast = document.createElement('div');
+            toast.className = 'bg-gray-800 text-white px-4 py-3 rounded-xl shadow-lg text-sm font-medium flex items-center justify-between opacity-0 transition-opacity duration-300';
+            toast.innerHTML = `<span>${message}</span>`;
+            
+            toastContainer.appendChild(toast);
+            
+            // Animate in
+            requestAnimationFrame(() => {
+                toast.classList.remove('opacity-0');
+            });
+            
+            // Remove after delay
+            setTimeout(() => {
+                toast.classList.add('opacity-0');
+                setTimeout(() => {
+                    if (toast.parentNode) {
+                        toastContainer.removeChild(toast);
+                    }
+                }, 300);
+            }, 3000);
+        }
+
+        window.onload = () => {
+            initMap();
+            
+            // 画面リサイズ時の対応 (PC <-> モバイル のレイアウト切り替え)
+            window.addEventListener('resize', () => {
+                map.invalidateSize();
+                if (window.innerWidth >= 768) {
+                    controlPane.style.transform = 'none';
+                } else {
+                    expandBottomSheet(isExpanded);
+                }
+            });
+        };
+
+        // ================= Service Worker登録（PWA / オフライン対応） =================
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./service-worker.js')
+                    .then((reg) => {
+                        console.log('Service Worker登録成功:', reg.scope);
+                    })
+                    .catch((err) => {
+                        console.warn('Service Worker登録失敗:', err);
+                    });
+            });
+        }
+    </script>
+</body>
+</html>
