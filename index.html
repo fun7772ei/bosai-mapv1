@@ -421,21 +421,38 @@
         // 事前ダウンロードするズーム範囲。広げるとタイル数が指数的に増える。
         // 市内という狭いエリアの地図であるため、広い範囲を見渡す「縮小」側の必要性は低く、
         // 個々の建物・避難所を正確に確認できる「拡大」側を優先する方針にしている。
-        // そのため縮小側の下限をz13（＝初期表示と同じズーム）までに制限し、
-        // その分、拡大側はz15まで（建物の形がわかる精細さ）許容している。
-        // MAP_BOUNDSの範囲では目安として z13〜15で合計 約650枚
-        // （参考: z11〜14に制限していた場合は約180枚、z16まで含めると+約1,850枚と急増する）。
-        // OpenStreetMapのタイルサーバーは大量の自動一括取得を想定していないため、
-        // 範囲やズームを広げすぎず、必要な時にだけ実行することを推奨。
-        const OFFLINE_MIN_ZOOM = 13;
-        const OFFLINE_MAX_ZOOM = 15;
-        // 通常表示時（オンライン中）もこのズーム範囲に合わせる。
-        // 縮小側も初期表示(z13)より外には出られないようにし、
-        // 拡大側もオフライン保存範囲を超えてズームインできないように制限する。
-        // これにより「オフライン保存した範囲」と「実際に表示できる範囲」が常に一致し、
-        // 保存していないズームレベルにアクセスして真っ白になる、という状態を防げる。
-        const MAP_MIN_ZOOM = OFFLINE_MIN_ZOOM;
-        const MAP_MAX_ZOOM = OFFLINE_MAX_ZOOM;
+        // 実機で試した結果、拡大側はz16程度で実用上十分と判断し、この範囲に調整した。
+        // MAP_BOUNDSの範囲では目安として z15〜16で合計 約2,333枚
+        // （内訳: z15=484 / z16=1,849）。旧設定(z13〜15、約650枚)の約3.6倍。
+        const OFFLINE_MIN_ZOOM = 15;
+        const OFFLINE_MAX_ZOOM = 16;
+        // オンライン中はタイルをその場で都度取得できるため、事前ダウンロード範囲に縛られず
+        // OSM標準タイルが提供する範囲でズーム自由度を持たせる（0=世界全体 / 19=OSM標準の最大精細度）。
+        // オフライン中は「保存済みタイルの範囲＝実際に表示できる範囲」に一致させることで、
+        // 保存していないズームレベルにアクセスして真っ白になる、という状態を防ぐ。
+        const ONLINE_MIN_ZOOM = 0;
+        const ONLINE_MAX_ZOOM = 19;
+
+        // 現在の通信状態（オンライン/オフライン）に応じたズーム範囲を返す
+        function getZoomRangeForConnection() {
+            return navigator.onLine
+                ? { min: ONLINE_MIN_ZOOM, max: ONLINE_MAX_ZOOM }
+                : { min: OFFLINE_MIN_ZOOM, max: OFFLINE_MAX_ZOOM };
+        }
+
+        // 避難所を選択した際などにフォーカスするズームレベル。
+        // オンライン時の上限(z19)まで寄せると近すぎるため、
+        // オフライン保存範囲の上限(z16)を「詳細表示」の目安として固定で使う。
+        const DETAIL_VIEW_ZOOM = OFFLINE_MAX_ZOOM;
+
+        // map生成後に呼び出し、現在の通信状態に応じてズーム範囲を反映する。
+        // navigator.onLineの変化(window の online/offline イベント)のたびに呼び直す想定。
+        function applyZoomRangeForConnection() {
+            if (!map) return;
+            const { min, max } = getZoomRangeForConnection();
+            map.setMinZoom(min); // 現在ズームが新しい範囲外なら自動でクランプされる
+            map.setMaxZoom(max);
+        }
 
 
         // DOM Elements
@@ -481,11 +498,14 @@
                 [MAP_BOUNDS.north, MAP_BOUNDS.east]  // 北東端
             );
 
+            // 起動時点の通信状態に応じたズーム範囲（オフラインなら保存済み範囲、オンラインなら自由）
+            const initialZoomRange = getZoomRangeForConnection();
+
             map = L.map('map', {
                 center: defaultCenter,
-                zoom: 13,
-                minZoom: MAP_MIN_ZOOM, // ズームアウトしすぎないように制限（市内マップのため広い縮小は不要）
-                maxZoom: MAP_MAX_ZOOM, // オフライン保存範囲を超えてズームインできないように制限
+                zoom: 15,
+                minZoom: initialZoomRange.min,
+                maxZoom: initialZoomRange.max,
                 maxBounds: sojaBounds, // 移動範囲を制限して不要な読み込みを防ぐ
                 maxBoundsViscosity: 1.0, // 境界でピタッと止める
                 zoomControl: false
@@ -498,10 +518,23 @@
             // 呼び出しごとに異なるURL（a.tile... / b.tile...）になり、
             // 事前にキャッシュしたタイルとURLが一致せずオフライン時にキャッシュが
             // ヒットしないことがあるため、ホストを固定してキャッシュの一貫性を保つ。
+            // maxZoomはタイル自体が提供される上限（=オンライン時の上限）に合わせておく。
+            // 実際にユーザーがズームできる範囲はmap側のminZoom/maxZoom
+            // （通信状態に応じてapplyZoomRangeForConnectionが切り替える）で制御する。
             L.tileLayer(OSM_TILE_URL_TEMPLATE, {
                 attribution: '&copy; OpenStreetMap contributors',
-                maxZoom: MAP_MAX_ZOOM
+                maxZoom: ONLINE_MAX_ZOOM
             }).addTo(map);
+
+            // 通信状態が変化するたびにズーム範囲を切り替える
+            window.addEventListener('online', () => {
+                applyZoomRangeForConnection();
+                showToast('オンラインになりました（ズーム制限を解除しました）');
+            });
+            window.addEventListener('offline', () => {
+                applyZoomRangeForConnection();
+                showToast('オフラインになりました（保存済み範囲にズームを制限します）');
+            });
 
             renderMarkers();
             renderList();
@@ -560,7 +593,7 @@
                 const marker = L.marker([shelter.lat, shelter.lng], { icon: customIcon }).addTo(map);
                 
                 marker.on('click', () => {
-                    map.flyTo([shelter.lat, shelter.lng], MAP_MAX_ZOOM, { duration: 0.8 });
+                    map.flyTo([shelter.lat, shelter.lng], DETAIL_VIEW_ZOOM, { duration: 0.8 });
                     highlightCard(shelter.id);
                     // モバイル時はマーカータップでシートを下げる
                     if (window.innerWidth < 768) expandBottomSheet(false);
@@ -629,7 +662,7 @@
                 `;
                 
                 li.addEventListener('click', () => {
-                    map.flyTo([shelter.lat, shelter.lng], MAP_MAX_ZOOM, { duration: 0.8 });
+                    map.flyTo([shelter.lat, shelter.lng], DETAIL_VIEW_ZOOM, { duration: 0.8 });
                     highlightCard(shelter.id);
                     // モバイル時はリストアイテムタップでシートを下げる
                     if (window.innerWidth < 768) expandBottomSheet(false);
@@ -721,7 +754,7 @@
                     const lat = pos.coords.latitude;
                     const lng = pos.coords.longitude;
                     setUserLocation(lat, lng, "GPS");
-                    map.flyTo([lat, lng], MAP_MAX_ZOOM, { duration: 1 });
+                    map.flyTo([lat, lng], DETAIL_VIEW_ZOOM, { duration: 1 });
                     showToast("GPSで現在地を取得しました");
                     btnGps.innerHTML = originalHtml;
                 },
