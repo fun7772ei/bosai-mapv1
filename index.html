@@ -260,6 +260,22 @@
         </div>
     </div>
 
+    <!-- オフライン地図削除 確認モーダル -->
+    <div id="delete-map-modal" class="hidden fixed inset-0 z-[2100] flex items-center justify-center p-6">
+        <div id="delete-map-modal-backdrop" class="absolute inset-0 bg-black/40"></div>
+        <div class="relative bg-white rounded-3xl shadow-2xl p-6 max-w-xs w-full flex flex-col gap-4">
+            <div class="flex items-center gap-2.5">
+                <span class="w-8 h-8 rounded-full flex items-center justify-center text-sm font-black shrink-0" style="background-color: #fdecea; color: #b3261e;">!</span>
+                <h2 class="font-bold text-base" style="color: var(--md-on-surface);">オフライン地図の削除</h2>
+            </div>
+            <p class="text-sm leading-relaxed" style="color: var(--md-on-surface-variant);">保存済みのオフライン地図データを削除しますか？削除後は再度オンラインでダウンロードするまで、オフライン環境で地図が表示できなくなります。</p>
+            <div class="flex gap-2">
+                <button id="btn-delete-map-cancel" class="m3-interactive flex-1 py-2.5 rounded-full font-bold text-sm active:scale-[0.98] transition-transform" style="background-color: var(--md-surface); color: var(--md-on-surface); border: 1px solid var(--md-outline-variant);">キャンセル</button>
+                <button id="btn-delete-map-confirm" class="m3-interactive flex-1 py-2.5 rounded-full font-bold text-sm text-white active:scale-[0.98] transition-transform" style="background-color: #b3261e;">削除する</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         // グローバルエラーハンドラ：「Script error.」の中身をコンソールに残す
         window.addEventListener('error', function (e) {
@@ -403,18 +419,22 @@
         // Service Worker (service-worker.js) の TILE_CACHE と同じ名前にすること
         const TILE_CACHE_NAME = 'hinanjo-tiles-v1';
         // 事前ダウンロードするズーム範囲。広げるとタイル数が指数的に増える。
-        // MAP_BOUNDSの範囲では目安として z11〜14で合計 約180枚
-        // （参考: z15まで含めると約660枚、さらに広い範囲だとz11〜15で約1,150枚だった）。
-        // 建物1つ1つが判別できるほどの精細さ(z15以上)は避難所を探す用途では必須ではなく、
-        // 街区・主要道路が見えるz14程度でも避難所ピンの位置は十分わかるため、
-        // データ量削減のためz14までに制限している。
+        // 市内という狭いエリアの地図であるため、広い範囲を見渡す「縮小」側の必要性は低く、
+        // 個々の建物・避難所を正確に確認できる「拡大」側を優先する方針にしている。
+        // そのため縮小側の下限をz13（＝初期表示と同じズーム）までに制限し、
+        // その分、拡大側はz15まで（建物の形がわかる精細さ）許容している。
+        // MAP_BOUNDSの範囲では目安として z13〜15で合計 約650枚
+        // （参考: z11〜14に制限していた場合は約180枚、z16まで含めると+約1,850枚と急増する）。
         // OpenStreetMapのタイルサーバーは大量の自動一括取得を想定していないため、
         // 範囲やズームを広げすぎず、必要な時にだけ実行することを推奨。
-        const OFFLINE_MIN_ZOOM = 11;
-        const OFFLINE_MAX_ZOOM = 14;
-        // 通常表示時（オンライン中）もこのズームより先には拡大できないようにする。
+        const OFFLINE_MIN_ZOOM = 13;
+        const OFFLINE_MAX_ZOOM = 15;
+        // 通常表示時（オンライン中）もこのズーム範囲に合わせる。
+        // 縮小側も初期表示(z13)より外には出られないようにし、
+        // 拡大側もオフライン保存範囲を超えてズームインできないように制限する。
         // これにより「オフライン保存した範囲」と「実際に表示できる範囲」が常に一致し、
         // 保存していないズームレベルにアクセスして真っ白になる、という状態を防げる。
+        const MAP_MIN_ZOOM = OFFLINE_MIN_ZOOM;
         const MAP_MAX_ZOOM = OFFLINE_MAX_ZOOM;
 
 
@@ -443,6 +463,11 @@
         const infoModalBackdrop = document.getElementById('info-modal-backdrop');
         const btnInfoClose = document.getElementById('btn-info-close');
 
+        const deleteMapModal = document.getElementById('delete-map-modal');
+        const deleteMapModalBackdrop = document.getElementById('delete-map-modal-backdrop');
+        const btnDeleteMapCancel = document.getElementById('btn-delete-map-cancel');
+        const btnDeleteMapConfirm = document.getElementById('btn-delete-map-confirm');
+
         const btnDownloadMap = document.getElementById('btn-download-map');
         const btnDownloadMapLabel = document.getElementById('btn-download-map-label');
         const btnDownloadMapIconDefault = document.getElementById('btn-download-map-icon-default');
@@ -459,7 +484,7 @@
             map = L.map('map', {
                 center: defaultCenter,
                 zoom: 13,
-                minZoom: OFFLINE_MIN_ZOOM, // ズームアウトしすぎないように制限
+                minZoom: MAP_MIN_ZOOM, // ズームアウトしすぎないように制限（市内マップのため広い縮小は不要）
                 maxZoom: MAP_MAX_ZOOM, // オフライン保存範囲を超えてズームインできないように制限
                 maxBounds: sojaBounds, // 移動範囲を制限して不要な読み込みを防ぐ
                 maxBoundsViscosity: 1.0, // 境界でピタッと止める
@@ -859,7 +884,9 @@
         }
 
         // ダウンロードボタンの見た目を「未保存」⇔「準備完了」で切り替える
+        let offlineMapReady = false;
         function setDownloadButtonReady(isReady) {
+            offlineMapReady = isReady;
             btnDownloadMapIconDefault.classList.toggle('hidden', isReady);
             btnDownloadMapIconReady.classList.toggle('hidden', !isReady);
             btnDownloadMapLabel.innerText = isReady ? 'オフライン用のマップ準備完了' : 'オフライン用に地図を保存';
@@ -993,7 +1020,37 @@
             }
         }
 
-        btnDownloadMap.addEventListener('click', downloadOfflineMap);
+        // ================= オフライン地図の削除 =================
+        async function deleteOfflineMap() {
+            btnDeleteMapConfirm.disabled = true;
+            try {
+                await caches.delete(TILE_CACHE_NAME);
+                setDownloadButtonReady(false);
+                showToast('オフライン地図データを削除しました');
+            } catch (e) {
+                showToast('削除中にエラーが発生しました');
+            } finally {
+                btnDeleteMapConfirm.disabled = false;
+                deleteMapModal.classList.add('hidden');
+            }
+        }
+
+        function closeDeleteMapModal() {
+            deleteMapModal.classList.add('hidden');
+        }
+        btnDeleteMapCancel.addEventListener('click', closeDeleteMapModal);
+        deleteMapModalBackdrop.addEventListener('click', closeDeleteMapModal);
+        btnDeleteMapConfirm.addEventListener('click', deleteOfflineMap);
+
+        // 準備完了状態（ダウンロード済み）でボタンを押した場合は削除確認を出し、
+        // 未保存状態であれば通常どおりダウンロードを開始する
+        btnDownloadMap.addEventListener('click', () => {
+            if (offlineMapReady) {
+                deleteMapModal.classList.remove('hidden');
+            } else {
+                downloadOfflineMap();
+            }
+        });
 
         window.onload = () => {
             initMap();
