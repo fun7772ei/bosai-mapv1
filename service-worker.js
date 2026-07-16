@@ -2,6 +2,8 @@
 const CACHE_VERSION = 'v1';
 const CORE_CACHE = `hinanjo-core-${CACHE_VERSION}`;
 const RUNTIME_CACHE = `hinanjo-runtime-${CACHE_VERSION}`;
+// 注意: この名前は index.html 内の TILE_CACHE_NAME と必ず一致させること
+// （事前ダウンロードしたタイルとService Workerが参照するキャッシュを一致させるため）
 const TILE_CACHE = `hinanjo-tiles-${CACHE_VERSION}`;
 
 const MAX_TILE_ENTRIES = 300;
