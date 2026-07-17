@@ -23,17 +23,23 @@
     <!-- Android向け設定 -->
     <meta name="mobile-web-app-capable" content="yes">
 
+    <!-- 軽量化: 外部CDNへ事前接続しておき、DNS/TLSハンドシェイクの待ち時間を短縮 -->
+    <link rel="preconnect" href="https://unpkg.com">
+    <link rel="preconnect" href="https://cdn.tailwindcss.com">
+
     <!-- Leaflet.js CDN -->
+    <!-- 軽量化: defer を付け、HTMLパース・初期描画をブロックしないようにする（地図初期化はwindow.onloadで行うため実害なし） -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
+
     <!-- Tailwind CSS -->
-    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.tailwindcss.com" defer></script>
 
     <!-- Google Fonts: Noto Sans JP & Inter -->
+    <!-- 軽量化: 実際にコード内で使用しているウェイトのみに絞り込み（300/600は未使用のため削除） -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+JP:wght@300;400;500;700;900&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700;900&display=swap" rel="stylesheet">
 
     <!-- Material You (Material 3) Style Tokens -->
     <style>
@@ -100,6 +106,44 @@
             .mobile-bottom-sheet {
                 transition: transform 0.35s cubic-bezier(0.1, 0.76, 0.55, 0.94);
             }
+        }
+
+        /* ================= タッチ操作性の改善 ================= */
+        /* タップ後の300ms遅延・意図しないダブルタップズームを抑止し、反応をキビキビさせる */
+        button, .filter-chip, .leaflet-marker-icon, #shelter-list li {
+            touch-action: manipulation;
+        }
+
+        /* 選択中の避難所ピン：タップした瞬間にわかりやすくポップさせる */
+        .shelter-pin-selected {
+            animation: pin-pop 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
+            filter: drop-shadow(0 3px 6px rgba(179, 38, 30, 0.35));
+        }
+        @keyframes pin-pop {
+            0%   { transform: scale(1); }
+            50%  { transform: scale(1.22); }
+            100% { transform: scale(1); }
+        }
+
+        /* 避難所ピンをタップした際の情報ポップアップ（Material Youのカードに合わせる） */
+        .leaflet-popup-content-wrapper {
+            background: var(--md-surface);
+            color: var(--md-on-surface);
+            border-radius: 20px;
+            box-shadow: 0 6px 20px rgba(0,0,0,0.18);
+        }
+        .leaflet-popup-content {
+            margin: 14px 16px;
+            line-height: 1.4;
+            min-width: 180px;
+        }
+        .leaflet-popup-tip {
+            background: var(--md-surface);
+        }
+        .leaflet-popup-close-button {
+            color: var(--md-on-surface-variant) !important;
+            font-size: 20px !important;
+            padding: 6px 8px 0 0 !important;
         }
     </style>
 </head>
@@ -541,7 +585,11 @@
         }
 
         // カスタムのSVGアイコン (Material 3スタイル)
-        const M3_SHELTER_ICON = `
+        // 通常時はプライマリカラー、選択中の避難所は赤色にして「今どこを見ているか」を一目で分かるようにする
+        const SHELTER_PIN_DEFAULT_COLOR = 'var(--md-primary)';
+        const SHELTER_PIN_SELECTED_COLOR = '#b3261e'; // 削除確認モーダル等と同じ「強調・注意」の赤系に統一
+        function buildShelterPinSvg(fillColor) {
+            return `
             <svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
                 <!-- やわらかいドロップシャドウ -->
                 <ellipse cx="20" cy="37" rx="10" ry="3" fill="rgba(0,0,0,0.15)" />
@@ -550,12 +598,25 @@
                 <path d="M20,2 C10.6,2 3,9.6 3,19 C3,30 20,39 20,39 C20,39 37,30 37,19 C37,9.6 29.4,2 20,2 Z" fill="#ffffff" />
                 
                 <!-- マップピンの形状（メインカラー） -->
-                <path d="M20,4.5 C12,4.5 5.5,11 5.5,19 C5.5,28.5 20,36.5 20,36.5 C20,36.5 34.5,28.5 34.5,19 C34.5,11 28,4.5 20,4.5 Z" fill="var(--md-primary)" />
+                <path d="M20,4.5 C12,4.5 5.5,11 5.5,19 C5.5,28.5 20,36.5 20,36.5 C20,36.5 34.5,28.5 34.5,19 C34.5,11 28,4.5 20,4.5 Z" fill="${fillColor}" />
                 
                 <!-- 中央の白丸 -->
                 <circle cx="20" cy="18" r="6.5" fill="#ffffff" />
             </svg>
         `;
+        }
+
+        // 通常/選択中の2種類のL.divIconをあらかじめ用意しておき、クリックの都度は差し替えのみで済むようにする
+        function createShelterDivIcon(selected) {
+            return L.divIcon({
+                html: buildShelterPinSvg(selected ? SHELTER_PIN_SELECTED_COLOR : SHELTER_PIN_DEFAULT_COLOR),
+                className: `bg-transparent${selected ? ' shelter-pin-selected' : ''}`,
+                iconSize: [40, 40],
+                iconAnchor: [20, 39] // ピンの先端が正確な位置を指すようにアンカーを調整
+            });
+        }
+        const SHELTER_ICON_DEFAULT = createShelterDivIcon(false);
+        const SHELTER_ICON_SELECTED = createShelterDivIcon(true);
 
         function getFilteredShelters() {
             return MOCK_SHELTERS.filter(shelter => {
@@ -575,29 +636,92 @@
             });
         }
 
+        // 距離の表示用フォーマット（リスト・ポップアップで共通利用）
+        function formatDistance(shelter) {
+            if (shelter.distance === undefined) return '';
+            const d = shelter.distance < 1000 ? `${Math.round(shelter.distance)}m` : `${(shelter.distance / 1000).toFixed(1)}km`;
+            return `現在地から ${d}`;
+        }
+
+        // 施設区分・対応災害のバッジHTML生成（リスト・ポップアップで共通利用。重複コード削減）
+        function buildTypeBadgesHtml(shelter) {
+            return shelter.type.map(t => `<span class="bg-[var(--md-primary-container)] text-[var(--md-on-primary-container)] px-1.5 py-0.5 rounded text-[10px] font-bold">${t}</span>`).join('');
+        }
+        function buildDisasterBadgesHtml(shelter) {
+            return (shelter.disasters || []).map(d => {
+                const meta = DISASTER_META[d];
+                if (!meta) return '';
+                return `<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold ${meta.classes}">
+                    <span class="w-1.5 h-1.5 rounded-full ${meta.dot}"></span>${meta.label}
+                </span>`;
+            }).join('');
+        }
+
+        // マーカータップ時に地図上へ出す施設情報ポップアップの中身
+        // (bindPopupに関数を渡すことで、開くたびに最新の距離を反映する)
+        function buildPopupHtml(shelter) {
+            const dist = formatDistance(shelter);
+            return `
+                <div class="min-w-[180px] max-w-[220px]">
+                    <h3 class="font-bold text-[14px] mb-1" style="color: var(--md-on-surface);">${shelter.name}</h3>
+                    <p class="text-[11px] mb-1.5" style="color: var(--md-on-surface-variant);">${shelter.desc}</p>
+                    <div class="flex flex-wrap gap-1 mb-1">${buildTypeBadgesHtml(shelter)}</div>
+                    <div class="flex flex-wrap gap-1">${buildDisasterBadgesHtml(shelter)}</div>
+                    ${dist ? `<div class="text-[10px] font-bold px-2 py-1 rounded bg-[var(--md-surface-container)] text-[var(--md-on-surface-variant)] inline-block mt-2">${dist}</div>` : ''}
+                </div>
+            `;
+        }
+
+        // 現在選択中（＝直近でタップされた）避難所のID。ピンの色とリストのハイライトを連動させるために使う
+        let selectedShelterId = null;
+
+        // 避難所を「選択」する処理を一箇所にまとめる
+        // (地図上のピンをタップ / リストの項目をタップ、どちらから呼ばれても同じ挙動になるようにする)
+        function selectShelter(shelter, { fromMap = false } = {}) {
+            const prevId = selectedShelterId;
+            selectedShelterId = shelter.id;
+
+            // ピンの色を更新（前回選択していたピンは通常色に戻し、今回選択したピンだけ赤くする）
+            markers.forEach(m => {
+                if (m.id === prevId && m.id !== shelter.id) m.marker.setIcon(SHELTER_ICON_DEFAULT);
+                if (m.id === shelter.id) m.marker.setIcon(SHELTER_ICON_SELECTED);
+            });
+
+            map.flyTo([shelter.lat, shelter.lng], DETAIL_VIEW_ZOOM, { duration: 0.8 });
+            highlightCard(shelter.id);
+
+            // 地図上のピンをタップした場合は、その場で施設情報ポップアップを開く
+            const target = markers.find(m => m.id === shelter.id);
+            if (fromMap && target) {
+                target.marker.openPopup();
+            }
+
+            // モバイル時はタップでシートを下げ、地図とポップアップが隠れないようにする
+            if (window.innerWidth < 768) expandBottomSheet(false);
+        }
+
         function renderMarkers() {
             // 古いマーカーを削除
             markers.forEach(m => map.removeLayer(m.marker));
             markers = [];
 
-            const customIcon = L.divIcon({
-                html: M3_SHELTER_ICON,
-                className: 'bg-transparent',
-                iconSize: [40, 40],
-                iconAnchor: [20, 39] // ピンの先端が正確な位置を指すようにアンカーを調整
-            });
-
             const filtered = getFilteredShelters();
+            // フィルターで選択中の避難所が消えた場合は選択状態を解除する
+            if (selectedShelterId !== null && !filtered.some(s => s.id === selectedShelterId)) {
+                selectedShelterId = null;
+            }
 
             filtered.forEach(shelter => {
-                const marker = L.marker([shelter.lat, shelter.lng], { icon: customIcon }).addTo(map);
-                
-                marker.on('click', () => {
-                    map.flyTo([shelter.lat, shelter.lng], DETAIL_VIEW_ZOOM, { duration: 0.8 });
-                    highlightCard(shelter.id);
-                    // モバイル時はマーカータップでシートを下げる
-                    if (window.innerWidth < 768) expandBottomSheet(false);
-                });
+                const isSelected = shelter.id === selectedShelterId;
+                const marker = L.marker([shelter.lat, shelter.lng], {
+                    icon: isSelected ? SHELTER_ICON_SELECTED : SHELTER_ICON_DEFAULT
+                }).addTo(map);
+
+                // タップで施設情報がすぐ見えるよう、ポップアップを常時バインドしておく
+                // (関数で渡すことで、開くたびに最新の距離情報を反映できる)
+                marker.bindPopup(() => buildPopupHtml(shelter), { closeButton: true, maxWidth: 240 });
+
+                marker.on('click', () => selectShelter(shelter, { fromMap: true }));
 
                 markers.push({ id: shelter.id, marker: marker });
             });
@@ -634,39 +758,19 @@
                 const li = document.createElement('li');
                 li.id = `card-${shelter.id}`;
                 li.className = 'm3-interactive bg-white rounded-2xl p-4 shadow-sm border border-gray-100 cursor-pointer hover:shadow-md transition-shadow';
-                
-                let distHtml = '';
-                if (shelter.distance !== undefined) {
-                    const d = shelter.distance < 1000 ? `${Math.round(shelter.distance)}m` : `${(shelter.distance/1000).toFixed(1)}km`;
-                    distHtml = `<div class="text-[11px] font-bold px-2 py-1 rounded bg-[var(--md-surface-container)] text-[var(--md-on-surface-variant)] inline-block mt-2">現在地から ${d}</div>`;
-                }
 
-                const disasterBadges = (shelter.disasters || []).map(d => {
-                    const meta = DISASTER_META[d];
-                    if (!meta) return '';
-                    return `<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold ${meta.classes}">
-                        <span class="w-1.5 h-1.5 rounded-full ${meta.dot}"></span>${meta.label}
-                    </span>`;
-                }).join('');
+                const dist = formatDistance(shelter);
+                const distHtml = dist ? `<div class="text-[11px] font-bold px-2 py-1 rounded bg-[var(--md-surface-container)] text-[var(--md-on-surface-variant)] inline-block mt-2">${dist}</div>` : '';
 
                 li.innerHTML = `
                     <h3 class="font-bold text-[15px] mb-1" style="color: var(--md-on-surface);">${shelter.name}</h3>
                     <p class="text-xs text-gray-500 mb-2">${shelter.desc}</p>
-                    <div class="flex flex-wrap gap-1 mb-1.5">
-                        ${shelter.type.map(t => `<span class="bg-[var(--md-primary-container)] text-[var(--md-on-primary-container)] px-1.5 py-0.5 rounded text-[10px] font-bold">${t}</span>`).join('')}
-                    </div>
-                    <div class="flex flex-wrap gap-1 mb-1">
-                        ${disasterBadges}
-                    </div>
+                    <div class="flex flex-wrap gap-1 mb-1.5">${buildTypeBadgesHtml(shelter)}</div>
+                    <div class="flex flex-wrap gap-1 mb-1">${buildDisasterBadgesHtml(shelter)}</div>
                     ${distHtml}
                 `;
                 
-                li.addEventListener('click', () => {
-                    map.flyTo([shelter.lat, shelter.lng], DETAIL_VIEW_ZOOM, { duration: 0.8 });
-                    highlightCard(shelter.id);
-                    // モバイル時はリストアイテムタップでシートを下げる
-                    if (window.innerWidth < 768) expandBottomSheet(false);
-                });
+                li.addEventListener('click', () => selectShelter(shelter, { fromMap: false }));
                 
                 shelterList.appendChild(li);
             });
@@ -940,9 +1044,24 @@
             }
         }
 
+        // タイル取得の同時実行数・リクエスト間隔を回線状況に応じて調整する
+        // ・OpenStreetMapのタイルサーバーへの配慮として「同時に叩きすぎない」方針は維持しつつ、
+        // 　これまで一律だった値を、実際の回線が速い場合は少し引き上げてダウンロード時間を短縮する。
+        // ・Network Information API (navigator.connection) はAndroid Chromeでは利用できるが、
+        // 　iPadOS/iOS Safariには実装がないため、その場合は「通常回線」を想定した値にフォールバックする。
+        function getDownloadTuning() {
+            const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+            if (conn && (conn.saveData || ['slow-2g', '2g', '3g'].includes(conn.effectiveType))) {
+                // データ節約モード or低速回線と判定した場合は、これまで通り控えめに
+                return { concurrency: 2, intervalMs: 150 };
+            }
+            // Wi-Fi/4G以上を想定した標準値（iPadOS/Androidの通常利用環境）
+            return { concurrency: 4, intervalMs: 60 };
+        }
+
         // ダウンロード進捗を表示する専用トースト（完了までは自動で消えない）
         let progressToastEl = null;
-        function updateDownloadProgress(done, total) {
+        function updateDownloadProgress(done, total, etaMs) {
             const pct = total > 0 ? Math.round((done / total) * 100) : 0;
 
             if (!progressToastEl) {
@@ -958,7 +1077,13 @@
                 requestAnimationFrame(() => progressToastEl.classList.remove('opacity-0'));
             }
 
-            progressToastEl.querySelector('#download-progress-label').innerText = `地図データを保存中... ${pct}%（${done}/${total}）`;
+            let etaLabel = '';
+            if (etaMs !== undefined && etaMs > 0 && done < total) {
+                const etaSec = Math.round(etaMs / 1000);
+                etaLabel = etaSec >= 60 ? `　残り約${Math.ceil(etaSec / 60)}分` : `　残り約${etaSec}秒`;
+            }
+
+            progressToastEl.querySelector('#download-progress-label').innerText = `地図データを保存中... ${pct}%（${done}/${total}）${etaLabel}`;
             progressToastEl.querySelector('#download-progress-bar').style.width = `${pct}%`;
 
             if (done >= total) {
@@ -1004,22 +1129,24 @@
             btnDownloadMapLabel.innerText = '保存中...';
             updateDownloadProgress(0, total);
 
-            // OpenStreetMapのタイルサーバーに配慮し、同時接続数と間隔を抑えて取得する
-            // （一度に大量・高頻度でリクエストする「一括ダウンロード」的な使い方は
-            // 利用ポリシー上望ましくないため、順番にゆっくり取得する設計にしている）
-            const CONCURRENCY = 2;
-            const REQUEST_INTERVAL_MS = 200;
+            // OpenStreetMapのタイルサーバーへの配慮は維持しつつ、回線状況に応じて
+            // 同時実行数・間隔を調整することでダウンロード時間を短縮する。
+            // （固定で重い間隔を挟んでいた旧実装に比べ、Wi-Fi/4G環境では体感的に大幅に速くなる）
+            const { concurrency: CONCURRENCY, intervalMs: REQUEST_INTERVAL_MS } = getDownloadTuning();
             let index = 0;
             let failed = 0;
+            const startTime = performance.now();
 
             async function worker() {
                 while (index < tiles.length) {
                     const t = tiles[index++];
                     const url = tileToUrl(t);
+                    let fetchedFromNetwork = false;
                     try {
                         const already = await cache.match(url);
                         if (!already) {
                             const res = await fetch(url);
+                            fetchedFromNetwork = true;
                             if (res && res.ok) {
                                 await cache.put(url, res.clone());
                             } else {
@@ -1030,8 +1157,16 @@
                         failed++;
                     }
                     done++;
-                    updateDownloadProgress(done, total);
-                    await new Promise(r => setTimeout(r, REQUEST_INTERVAL_MS));
+                    // 経過時間と完了数から残り時間を概算してユーザーに提示する
+                    const elapsed = performance.now() - startTime;
+                    const rate = done / elapsed; // 枚/ms
+                    const etaMs = rate > 0 ? (total - done) / rate : undefined;
+                    updateDownloadProgress(done, total, etaMs);
+                    // 既にキャッシュ済み（＝通信しなかった）タイルは待機不要。
+                    // 実際にサーバーへリクエストした時だけ間隔を空け、再開時の無駄な待ちをなくす。
+                    if (fetchedFromNetwork) {
+                        await new Promise(r => setTimeout(r, REQUEST_INTERVAL_MS));
+                    }
                 }
             }
 
