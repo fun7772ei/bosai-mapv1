@@ -70,6 +70,17 @@
             color: var(--md-on-surface);
         }
 
+        /* ================= モバイルの実表示高さ対応 ================= */
+        /* h-screen(100vh)はモバイルブラウザのアドレスバー分を含んだ高さになり、
+           アドレスバーの表示/非表示のたびにレイアウトがズレて、画面下部の
+           ボタン類が隠れたり位置がズレたりする原因になっていた。
+           dvh対応ブラウザでは実際に見えている高さ(100dvh)を優先して使う。 */
+        @supports (height: 100dvh) {
+            body {
+                height: 100dvh;
+            }
+        }
+
         /* Leaflet Container Tweaks */
         .leaflet-container {
             font-family: inherit;
@@ -197,7 +208,7 @@
             </div>
 
             <!-- 現在地決定モード時の中央ピン (シンプルなグレー十字ヘアライン) -->
-            <div id="center-pin" class="hidden absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-[1000] pointer-events-none">
+            <div id="center-pin" class="hidden absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-[1002] pointer-events-none">
                 <svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
                     <line x1="20" y1="0" x2="20" y2="40" stroke="#6b7280" stroke-width="2.5" />
                     <line x1="0" y1="20" x2="40" y2="20" stroke="#6b7280" stroke-width="2.5" />
@@ -205,7 +216,7 @@
             </div>
 
             <!-- 現在地決定アクションバー (より直感的でわかりやすいUIに改善) -->
-            <div id="set-location-container" class="hidden absolute bottom-24 md:bottom-10 left-1/2 transform -translate-x-1/2 z-[1000] flex flex-col items-center gap-3 w-[90%] max-w-sm">
+            <div id="set-location-container" class="hidden absolute bottom-[calc(6rem+env(safe-area-inset-bottom))] md:bottom-10 left-1/2 transform -translate-x-1/2 z-[1002] flex flex-col items-center gap-3 w-[90%] max-w-sm">
                 <!-- ガイドメッセージ -->
                 <div class="bg-white/95 backdrop-blur px-5 py-2.5 rounded-full shadow-lg text-sm font-bold text-center text-gray-800 border border-gray-200">
                     マップを動かして現在地を合わせてください
@@ -568,10 +579,21 @@
             // maxZoomはタイル自体が提供される上限（=オンライン時の上限）に合わせておく。
             // 実際にユーザーがズームできる範囲はmap側のminZoom/maxZoom
             // （通信状態に応じてapplyZoomRangeForConnectionが切り替える）で制御する。
-            L.tileLayer(OSM_TILE_URL_TEMPLATE, {
+            const tileLayer = L.tileLayer(OSM_TILE_URL_TEMPLATE, {
                 attribution: '&copy; OpenStreetMap contributors',
                 maxZoom: ONLINE_MAX_ZOOM
             }).addTo(map);
+
+            // オンライン時にタイル取得が失敗し続けている場合、原因不明のまま
+            // 「地図が真っ白/一部しか出ない」状態になるのを防ぐため、利用者に一度だけ知らせる
+            let tileErrorNotified = false;
+            tileLayer.on('tileerror', () => {
+                if (navigator.onLine && !tileErrorNotified) {
+                    tileErrorNotified = true;
+                    showToast('地図タイルの読み込みに失敗しました。通信状況をご確認ください');
+                    setTimeout(() => { tileErrorNotified = false; }, 15000);
+                }
+            });
 
             // 通信状態が変化するたびにズーム範囲を切り替える
             window.addEventListener('online', () => {
@@ -878,8 +900,13 @@
             locationWindow.classList.add('hidden');
             centerPin.classList.remove('hidden');
             setLocationContainer.classList.remove('hidden');
-            
-            if(window.innerWidth < 768) {
+
+            // 修正: 以前はボトムシートを「折りたたむ」だけだったため、折りたたみアニメーション中
+            // (0.35秒間)や端末サイズによっては、シートが「ここにする」ボタンの上に被ってしまい
+            // タップできないことがあった。現在地決定モード中はシートのタップを完全に無効化して、
+            // 見た目が重なっても操作を奪われないようにする。
+            if (window.innerWidth < 768) {
+                controlPane.classList.add('pointer-events-none');
                 expandBottomSheet(false);
             }
             showToast("マップを動かして現在地を合わせてください");
@@ -902,6 +929,7 @@
             locationWindow.classList.remove('hidden');
             centerPin.classList.add('hidden');
             setLocationContainer.classList.add('hidden');
+            controlPane.classList.remove('pointer-events-none');
         }
 
         let startY = 0;
@@ -1223,20 +1251,47 @@
             }
         });
 
-        window.onload = () => {
+        // 修正: 以前は window.onload（画像・フォント・CDN上のライブラリなど"全て"のリソースの
+        // 読み込み完了）を待ってから initMap() を呼んでいた。そのため、地図の表示には無関係な
+        // Googleフォントやアイコン画像の取得が遅い/失敗する（回線が不安定、広告ブロッカー等）だけで、
+        // オンラインなのに地図がいつまでも表示されない・操作できない、という不具合が起きていた。
+        // このスクリプトは body 末尾にあり実行時点でDOM構築は完了しているため、
+        // 地図の初期化に必要な Leaflet 本体の読み込みだけ確認できればすぐ開始してよい。
+        function startApp() {
+            if (typeof L === 'undefined') {
+                // Leaflet本体(CDN)の読み込みに失敗した場合。何も起きないまま固まって見えるより、
+                // 状況を伝えて再読み込みできるようにする。
+                showMapLoadError();
+                return;
+            }
             initMap();
             refreshDownloadButtonState();
+        }
 
-            // 画面リサイズ時の対応 (PC <-> モバイル のレイアウト切り替え)
-            window.addEventListener('resize', () => {
-                map.invalidateSize();
-                if (window.innerWidth >= 768) {
-                    controlPane.style.transform = 'none';
-                } else {
-                    expandBottomSheet(isExpanded);
-                }
-            });
-        };
+        function showMapLoadError() {
+            const mapEl = document.getElementById('map');
+            mapEl.innerHTML = `
+                <div class="w-full h-full flex flex-col items-center justify-center gap-3 p-6 text-center" style="background-color: var(--md-surface-dim);">
+                    <p class="font-bold text-sm" style="color: var(--md-on-surface);">地図の読み込みに失敗しました</p>
+                    <p class="text-xs" style="color: var(--md-on-surface-variant);">通信環境をご確認のうえ、再読み込みしてください</p>
+                    <button id="btn-reload-map" class="m3-interactive font-bold text-xs text-white px-5 py-2.5 rounded-full" style="background-color: var(--md-primary);">再読み込み</button>
+                </div>
+            `;
+            document.getElementById('btn-reload-map').addEventListener('click', () => location.reload());
+        }
+
+        startApp();
+
+        // 画面リサイズ時の対応 (PC <-> モバイル のレイアウト切り替え)
+        window.addEventListener('resize', () => {
+            if (!map) return;
+            map.invalidateSize();
+            if (window.innerWidth >= 768) {
+                controlPane.style.transform = 'none';
+            } else {
+                expandBottomSheet(isExpanded);
+            }
+        });
 
         // ================= Service Worker登録（PWA / オフライン対応） =================
         if ('serviceWorker' in navigator) {
