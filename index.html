@@ -28,9 +28,12 @@
     <link rel="preconnect" href="https://cdn.tailwindcss.com">
 
     <!-- Leaflet.js CDN -->
-    <!-- 軽量化: defer を付け、HTMLパース・初期描画をブロックしないようにする（地図初期化はwindow.onloadで行うため実害なし） -->
+    <!-- 修正: 本体スクリプト内でトップレベル（HTML解析中）に L.divIcon 等を同期的に呼び出しているため、
+         defer を付けると「本体スクリプトの実行時点でLeafletがまだ読み込まれていない」= L is not defined
+         というエラーになっていた。地図の初期化自体はwindow.onloadで行っているが、
+         アイコン定義(createShelterDivIcon)はモジュール直下で即時実行されるため、ここはブロッキング読み込みに戻す。 -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com" defer></script>
