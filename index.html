@@ -71,13 +71,13 @@
         }
 
         /* ================= モバイルの実表示高さ対応 ================= */
-        /* h-screen(100vh)はモバイルブラウザのアドレスバー分を含んだ高さになり、
-           アドレスバーの表示/非表示のたびにレイアウトがズレて、画面下部の
-           ボタン類が隠れたり位置がズレたりする原因になっていた。
-           dvh対応ブラウザでは実際に見えている高さ(100dvh)を優先して使う。 */
+        /* h-screen(100vh)はモバイルブラウザのアドレスバー/ツールバー分を含んだ高さになり、
+           実際に見えている範囲より大きくなることがある。dvh対応ブラウザではまずこちらを使う
+           （最終的な確定値はJS側でvisualViewportを使って上書きするので、これは初回描画までの
+           暫定値）。Tailwindのh-screenクラス(セレクタ特有度が高い)に負けないよう!importantを付与。 */
         @supports (height: 100dvh) {
             body {
-                height: 100dvh;
+                height: 100dvh !important;
             }
         }
 
@@ -512,6 +512,29 @@
             map.setMaxZoom(max);
         }
 
+
+        // ================= 実表示高さの補正（JS） =================
+        // Samsung Internet等、ブラウザ独自の下部ツールバー（アドレスバー）を持つブラウザでは、
+        // CSSのdvh/vhだけでは「実際に見えている範囲」を正しく取得できず、その分だけ画面下部の
+        // ボタンやマップがツールバーの裏に隠れてしまうことがあった（表示はされているが操作不能）。
+        // visualViewport APIが使える場合はそちらを最優先で使い、実際に見えている高さを
+        // body に直接pxで反映する。CSSより確実（インラインstyleが常に優先される）。
+        function setViewportHeight() {
+            const h = (window.visualViewport && window.visualViewport.height) || window.innerHeight;
+            document.body.style.height = h + 'px';
+            if (map) map.invalidateSize();
+        }
+        setViewportHeight();
+        window.addEventListener('resize', setViewportHeight);
+        window.addEventListener('orientationchange', setViewportHeight);
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener('resize', setViewportHeight);
+            window.visualViewport.addEventListener('scroll', setViewportHeight);
+        }
+        // 一部端末はツールバーの表示/非表示アニメーションが遅れて確定するため、
+        // 初回読み込み直後にも念のため再計算しておく
+        setTimeout(setViewportHeight, 300);
+        setTimeout(setViewportHeight, 1000);
 
         // DOM Elements
         const locationWindow = document.getElementById('location-window');
@@ -1266,6 +1289,9 @@
             }
             initMap();
             refreshDownloadButtonState();
+            // 初期化直後にもう一度、実際に見えている高さでマップサイズを確定させる
+            // （初期化タイミングでツールバーの表示状態が確定しきっていない端末向けの保険）
+            setViewportHeight();
         }
 
         function showMapLoadError() {
